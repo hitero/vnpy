@@ -17,7 +17,7 @@ from vnpy.trader.vtConstant import (PRODUCT_OPTION, OPTION_CALL, OPTION_PUT,
                                     DIRECTION_LONG, DIRECTION_SHORT,
                                     OFFSET_OPEN, OFFSET_CLOSE,
                                     PRICETYPE_LIMITPRICE)
-from vnpy.pricing import black, bs, crr, bsCython
+from vnpy.pricing import black, bs, crr, bsCython, crrCython
 
 from .omBase import (OmOption, OmUnderlying, OmChain, OmPortfolio,
                      EVENT_OM_LOG, EVENT_OM_STRATEGY, EVENT_OM_STRATEGYLOG,
@@ -32,6 +32,7 @@ MODEL_DICT['black'] = black
 MODEL_DICT['bs'] = bs
 MODEL_DICT['crr'] = crr
 MODEL_DICT['bsCython'] = bsCython
+MODEL_DICT['crrCython'] = crrCython
 
 
 
@@ -151,10 +152,15 @@ class OmEngine(object):
                     detail = self.mainEngine.getPositionDetail(contract.vtSymbol)
                     option = OmOption(contract, detail, underlying, model, r)
                     
+                    key = str(option.k)
                     if contract.optionType is OPTION_CALL:
-                        callDict[option.k] = option
+                        if key in callDict:
+                            key += 'a'
+                        callDict[key] = option
                     else:
-                        putDict[option.k] = option
+                        if key in putDict:
+                            key += 'a'                        
+                        putDict[key] = option
                         
             # 期权排序
             strikeList = callDict.keys()
@@ -240,7 +246,7 @@ class OmEngine(object):
 class OmStrategyEngine(object):
     """策略引擎"""
     settingFileName = 'strategy_setting.json'
-    settingfilePath = getJsonPath(settingFileName, __file__)    
+    settingFilePath = getJsonPath(settingFileName, __file__)    
 
     #----------------------------------------------------------------------
     def __init__(self, omEngine, eventEngine):
@@ -329,7 +335,7 @@ class OmStrategyEngine(object):
         """加载配置"""
         self.portfolio = self.omEngine.portfolio
         
-        with open(self.settingfilePath) as f:
+        with open(self.settingFilePath) as f:
             l = json.load(f)
             
             for setting in l:
@@ -362,20 +368,30 @@ class OmStrategyEngine(object):
             
             # 保存Tick映射关系
             for vtSymbol in strategy.vtSymbols:
-                l = self.symbolStrategyDict.setdefault(vtSymbol, [])
+                if vtSymbol in self.symbolStrategyDict:
+                    l = self.symbolStrategyDict[vtSymbol]
+                else:
+                    l = []
+                    self.symbolStrategyDict[vtSymbol] = l
                 l.append(strategy)    
     
     #----------------------------------------------------------------------
     def initStrategy(self, name):
         """初始化策略"""
         strategy = self.strategyDict[name]
-        self.callStrategyFunc(strategy, strategy.onInit)
+        
+        if not strategy.inited: 
+            strategy.inited = True
+            self.callStrategyFunc(strategy, strategy.onInit)
     
     #----------------------------------------------------------------------
     def startStrategy(self, name):
         """启动策略"""
         strategy = self.strategyDict[name]
-        self.callStrategyFunc(strategy, strategy.onStart)        
+        
+        if strategy.inited and not strategy.trading:
+            strategy.trading = True
+            self.callStrategyFunc(strategy, strategy.onStart)        
    
     #----------------------------------------------------------------------
     def stopStrategy(self, name):

@@ -113,9 +113,8 @@ class MainEngine(object):
         
         if gateway:
             gateway.connect()
-            
-            # 接口连接后自动执行数据库连接的任务
-            self.dbConnect()        
+        
+        self.dbConnect()
    
     #----------------------------------------------------------------------
     def subscribe(self, subscribeReq, gatewayName):
@@ -199,7 +198,7 @@ class MainEngine(object):
             # 读取MongoDB的设置
             try:
                 # 设置MongoDB操作的超时时间为0.5秒
-                self.dbClient = MongoClient(globalSetting['mongoHost'], globalSetting['mongoPort'], connectTimeoutMS=500)
+                self.dbClient = MongoClient(globalSetting['mongoHost'], globalSetting['mongoPort'], serverSelectionTimeoutMS=10)
                 
                 # 调用server_info查询服务器状态，防止服务器异常并未连接成功
                 self.dbClient.server_info()
@@ -211,6 +210,7 @@ class MainEngine(object):
                     self.eventEngine.register(EVENT_LOG, self.dbLogging)
                     
             except ConnectionFailure:
+                self.dbClient = None
                 self.writeLog(text.DATABASE_CONNECTING_FAILED)
     
     #----------------------------------------------------------------------
@@ -251,7 +251,17 @@ class MainEngine(object):
             collection = db[collectionName]
             collection.replace_one(flt, d, upsert)
         else:
-            self.writeLog(text.DATA_UPDATE_FAILED)        
+            self.writeLog(text.DATA_UPDATE_FAILED)   
+    
+    #----------------------------------------------------------------------
+    def dbDelete(self, dbName, collectionName, flt):
+        """从数据库中删除数据，flt是过滤条件"""
+        if self.dbClient:
+            db = self.dbClient[dbName]
+            collection = db[collectionName]
+            collection.delete_one(flt)
+        else:
+            self.writeLog(text.DATA_DELETE_FAILED)          
             
     #----------------------------------------------------------------------
     def dbLogging(self, event):
@@ -263,6 +273,11 @@ class MainEngine(object):
             'gateway': log.gatewayName
         }
         self.dbInsert(LOG_DB_NAME, self.todayDate, d)
+    
+    #----------------------------------------------------------------------
+    def getTick(self, vtSymbol):
+        """查询行情"""
+        return self.dataEngine.getTick(vtSymbol)          
     
     #----------------------------------------------------------------------
     def getContract(self, vtSymbol):
@@ -395,12 +410,13 @@ class DataEngine(object):
         self.eventEngine = eventEngine
         
         # 保存数据的字典和列表
+        self.tickDict = {}
         self.contractDict = {}
         self.orderDict = {}
         self.workingOrderDict = {}  # 可撤销委托
         self.tradeDict = {}
         self.accountDict = {}
-        self.positionDict= {}
+        self.positionDict = {}
         self.logList = []
         self.errorList = []
         
@@ -417,6 +433,7 @@ class DataEngine(object):
     #----------------------------------------------------------------------
     def registerEvent(self):
         """注册事件监听"""
+        self.eventEngine.register(EVENT_TICK, self.processTickEvent)
         self.eventEngine.register(EVENT_CONTRACT, self.processContractEvent)
         self.eventEngine.register(EVENT_ORDER, self.processOrderEvent)
         self.eventEngine.register(EVENT_TRADE, self.processTradeEvent)
@@ -424,6 +441,12 @@ class DataEngine(object):
         self.eventEngine.register(EVENT_ACCOUNT, self.processAccountEvent)
         self.eventEngine.register(EVENT_LOG, self.processLogEvent)
         self.eventEngine.register(EVENT_ERROR, self.processErrorEvent)
+        
+    #----------------------------------------------------------------------
+    def processTickEvent(self, event):
+        """处理成交事件"""
+        tick = event.dict_['data']
+        self.tickDict[tick.vtSymbol] = tick    
     
     #----------------------------------------------------------------------
     def processContractEvent(self, event):
@@ -489,6 +512,14 @@ class DataEngine(object):
         """处理错误事件"""
         error = event.dict_['data']
         self.errorList.append(error)
+        
+    #----------------------------------------------------------------------
+    def getTick(self, vtSymbol):
+        """查询行情对象"""
+        try:
+            return self.tickDict[vtSymbol]
+        except KeyError:
+            return None        
     
     #----------------------------------------------------------------------
     def getContract(self, vtSymbol):
@@ -672,7 +703,7 @@ class LogEngine(object):
             if not filename:
                 filename = 'vt_' + datetime.now().strftime('%Y%m%d') + '.log'
             filepath = getTempPath(filename)
-            self.fileHandler = logging.FileHandler(filepath)
+            self.fileHandler = logging.FileHandler(filepath, mode='w', encoding='utf-8')
             self.fileHandler.setLevel(self.level)
             self.fileHandler.setFormatter(self.formatter)
             self.logger.addHandler(self.fileHandler)
@@ -714,7 +745,7 @@ class LogEngine(object):
         function = self.levelFunctionDict[log.logLevel]     # 获取日志级别对应的处理函数
         msg = '\t'.join([log.gatewayName, log.logContent])
         function(msg)
-        
+  
     
 ########################################################################
 class PositionDetail(object):
@@ -851,8 +882,6 @@ class PositionDetail(object):
             self.shortPnl = pos.positionProfit
             self.shortPrice = pos.price
             
-        #self.output()
-    
     #----------------------------------------------------------------------
     def updateOrderReq(self, req, vtOrderID):
         """发单更新"""
@@ -965,15 +994,6 @@ class PositionDetail(object):
             self.longPosFrozen = self.longYdFrozen + self.longTdFrozen
             self.shortPosFrozen = self.shortYdFrozen + self.shortTdFrozen
             
-    #----------------------------------------------------------------------
-    def output(self):
-        """"""
-        print self.vtSymbol, '-'*30
-        print 'long, total:%s, td:%s, yd:%s' %(self.longPos, self.longTd, self.longYd)
-        print 'long frozen, total:%s, td:%s, yd:%s' %(self.longPosFrozen, self.longTdFrozen, self.longYdFrozen)
-        print 'short, total:%s, td:%s, yd:%s' %(self.shortPos, self.shortTd, self.shortYd)
-        print 'short frozen, total:%s, td:%s, yd:%s' %(self.shortPosFrozen, self.shortTdFrozen, self.shortYdFrozen)        
-    
     #----------------------------------------------------------------------
     def convertOrderReq(self, req):
         """转换委托请求"""
